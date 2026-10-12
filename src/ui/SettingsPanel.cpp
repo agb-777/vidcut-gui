@@ -3,7 +3,6 @@
 #include <QComboBox>
 #include <QFormLayout>
 #include <QHBoxLayout>
-#include <QLabel>
 #include <QPushButton>
 #include <QSlider>
 #include <QSpinBox>
@@ -41,20 +40,12 @@ SettingsPanel::SettingsPanel(QWidget* parent) : QGroupBox(QStringLiteral("Encodi
     form->addRow(QStringLiteral("CRF:"), crfRow);
     form->addRow(QStringLiteral("Audio bitrate:"), m_bitrate);
 
-    auto* hint = new QLabel(
-        QStringLiteral("Preset and CRF only affect the re-encoded parts (segments A and C, "
-                       "or the whole range when smart cut is not possible). "
-                       "Audio is always re-encoded to AAC."),
-        this);
-    hint->setWordWrap(true);
-    hint->setStyleSheet(QStringLiteral("color: #666666;"));
-
     auto* reset = new QPushButton(QStringLiteral("Reset to Defaults"), this);
     connect(reset, &QPushButton::clicked, this, &SettingsPanel::resetToDefaults);
 
     auto* bottom = new QHBoxLayout;
-    bottom->addWidget(hint, 1);
-    bottom->addWidget(reset, 0, Qt::AlignTop);
+    bottom->addStretch(1);
+    bottom->addWidget(reset);
 
     auto* root = new QVBoxLayout(this);
     root->addLayout(form);

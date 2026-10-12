@@ -8,9 +8,6 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-option(VIDCUT_BUILD_GUI   "Build the Qt GUI application" ON)
-option(VIDCUT_BUILD_TESTS "Build the core unit tests"   OFF)
-
 if(MSVC)
     add_compile_options(/utf-8 /W4)
 else()
@@ -18,7 +15,7 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
-# core: pure C++17, no Qt (parsing, keyframe analysis, planner, ffmpeg commands)
+# core: pure C++17, no Qt (keyframe analysis, planner, ffmpeg command lines)
 # ---------------------------------------------------------------------------
 add_library(vidcut_core STATIC
     src/core/AppInfo.h
@@ -29,7 +26,6 @@ add_library(vidcut_core STATIC
     src/core/EncoderProfile.h    src/core/EncoderProfile.cpp
     src/core/KeyframeAnalyzer.h  src/core/KeyframeAnalyzer.cpp
     src/core/CutPlanner.h        src/core/CutPlanner.cpp
-    src/core/PlanFormatter.h     src/core/PlanFormatter.cpp
     src/core/PipelineBuilder.h   src/core/PipelineBuilder.cpp
 )
 target_include_directories(vidcut_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -38,49 +34,37 @@ target_compile_definitions(vidcut_core PUBLIC
     VIDCUT_APP_VERSION="${PROJECT_VERSION}")
 
 # ---------------------------------------------------------------------------
-# tests
-# ---------------------------------------------------------------------------
-if(VIDCUT_BUILD_TESTS)
-    enable_testing()
-    add_executable(vidcut_core_tests tests/test_core.cpp)
-    target_link_libraries(vidcut_core_tests PRIVATE vidcut_core)
-    add_test(NAME core COMMAND vidcut_core_tests)
-endif()
-
-# ---------------------------------------------------------------------------
 # GUI (Qt 6 Widgets)
 # ---------------------------------------------------------------------------
-if(VIDCUT_BUILD_GUI)
-    find_package(Qt6 6.2 REQUIRED COMPONENTS Widgets)
-    set(CMAKE_AUTOMOC ON)
+find_package(Qt6 6.2 REQUIRED COMPONENTS Widgets)
+set(CMAKE_AUTOMOC ON)
 
-    qt_add_executable(VidCut WIN32 MACOSX_BUNDLE
-        src/main.cpp
+qt_add_executable(VidCut WIN32 MACOSX_BUNDLE
+    src/main.cpp
 
-        src/engine/CutErrors.h
-        src/engine/ProcessRunner.h    src/engine/ProcessRunner.cpp
-        src/engine/FfmpegLocator.h    src/engine/FfmpegLocator.cpp
-        src/engine/MediaProbe.h       src/engine/MediaProbe.cpp
-        src/engine/FileUtils.h        src/engine/FileUtils.cpp
-        src/engine/SettingsStore.h    src/engine/SettingsStore.cpp
-        src/engine/SmartCutter.h      src/engine/SmartCutter.cpp
+    src/engine/CutErrors.h
+    src/engine/ProcessRunner.h    src/engine/ProcessRunner.cpp
+    src/engine/FfmpegLocator.h    src/engine/FfmpegLocator.cpp
+    src/engine/MediaProbe.h       src/engine/MediaProbe.cpp
+    src/engine/DurationProbe.h    src/engine/DurationProbe.cpp
+    src/engine/FileUtils.h        src/engine/FileUtils.cpp
+    src/engine/SettingsStore.h    src/engine/SettingsStore.cpp
+    src/engine/SmartCutter.h      src/engine/SmartCutter.cpp
 
-        src/ui/MainWindow.h           src/ui/MainWindow.cpp
-        src/ui/SettingsPanel.h        src/ui/SettingsPanel.cpp
-        src/ui/PlanTableWidget.h      src/ui/PlanTableWidget.cpp
-        src/ui/AboutDialog.h          src/ui/AboutDialog.cpp
-    )
-    target_link_libraries(VidCut PRIVATE vidcut_core Qt6::Widgets)
+    src/ui/MainWindow.h           src/ui/MainWindow.cpp
+    src/ui/SettingsPanel.h        src/ui/SettingsPanel.cpp
+    src/ui/AboutDialog.h          src/ui/AboutDialog.cpp
+)
+target_link_libraries(VidCut PRIVATE vidcut_core Qt6::Widgets)
 
-    set_target_properties(VidCut PROPERTIES
-        MACOSX_BUNDLE_BUNDLE_NAME "VidCut"
-        MACOSX_BUNDLE_GUI_IDENTIFIER "com.vidcut.app"
-        MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
-        MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
-    )
+set_target_properties(VidCut PROPERTIES
+    MACOSX_BUNDLE_BUNDLE_NAME "VidCut"
+    MACOSX_BUNDLE_GUI_IDENTIFIER "com.vidcut.app"
+    MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+)
 
-    include(GNUInstallDirs)
-    install(TARGETS VidCut
-        BUNDLE  DESTINATION .
-        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-endif()
+include(GNUInstallDirs)
+install(TARGETS VidCut
+    BUNDLE  DESTINATION .
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

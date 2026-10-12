@@ -14,7 +14,6 @@
 #include "core/CutPlanner.h"
 #include "core/EncoderProfile.h"
 #include "core/PipelineBuilder.h"
-#include "core/PlanFormatter.h"
 #include "core/TimeUtils.h"
 #include "engine/FileUtils.h"
 #include "engine/MediaProbe.h"
@@ -45,7 +44,6 @@ void SmartCutter::run() {
 
 void SmartCutter::execute() {
     ProcessRunner runner(m_cancel);
-    auto info = [this](const QString& msg) { emit log(QStringLiteral("INFO  ") + msg); };
 
     // ---- 1. ffmpeg capability check (same rules as the original script) -----
     const QByteArray optRaw =
@@ -64,7 +62,6 @@ void SmartCutter::execute() {
             "This ffmpeg is too old (option -fps_mode is missing). Please upgrade ffmpeg."));
 
     // ---- 2. probe -----------------------------------------------------------
-    info(QStringLiteral("Analyzing input file..."));
     const MediaInfo media = MediaProbe::probe(runner, m_job.ffprobe, m_job.input);
     const VideoInfo& v = media.video;
 
@@ -76,43 +73,22 @@ void SmartCutter::execute() {
     if (media.duration > 0 && m_job.start >= media.duration)
         throw CutError(QStringLiteral("Start (%1) is beyond the video duration (%2).")
                            .arg(q(formatTime(m_job.start)), q(formatTime(media.duration))));
-    if (media.duration > 0 && m_job.end > media.duration)
-        info(QStringLiteral("End exceeds video duration, clamped to %1")
-                 .arg(q(formatTime(media.duration))));
 
     // ---- 3. encoder + plan --------------------------------------------------
     const auto smartEnc = buildEncoderArgs(v, m_job.settings);
-    bool smartOk = smartEnc.has_value();
-    std::vector<std::string> encArgs;
-    if (smartOk) {
-        encArgs = *smartEnc;
-    } else {
-        info(QStringLiteral("Codec '%1' is not supported by smartcut, falling back to full "
-                            "re-encode (libx264)")
-                 .arg(q(v.codecName)));
-        encArgs = fallbackEncoderArgs(v, m_job.settings);
-    }
+    const bool smartOk = smartEnc.has_value();
+    // Codec not supported by smartcut -> full re-encode with libx264.
+    const std::vector<std::string> encArgs =
+        smartOk ? *smartEnc : fallbackEncoderArgs(v, m_job.settings);
 
     std::optional<CutPlan> plan;
     if (smartOk) {
-        info(QStringLiteral("Reading keyframes..."));
         const auto pkts =
             MediaProbe::readPackets(runner, m_job.ffprobe, m_job.input, v.index, media.startTime);
-        if (!pkts) {
-            smartOk = false;
-            info(QStringLiteral("Incomplete packet timestamps, falling back to full re-encode"));
-        } else {
-            plan = makePlan(*pkts, m_job.start, m_job.end);
-            if (!plan)
-                info(QStringLiteral("Range too short or no suitable closed keyframe, "
-                                    "re-encoding this range only"));
-        }
+        // Incomplete timestamps or no usable keyframe -> plan stays empty and the
+        // whole range is re-encoded.
+        if (pkts) plan = makePlan(*pkts, m_job.start, m_job.end);
     }
-
-    QVariantList rows;
-    for (const PlanRow& r : describePlan(plan, m_job.start, m_job.end))
-        rows << QVariant(QStringList{q(r.segment), q(r.mode), q(r.range), q(r.duration)});
-    emit planReady(rows);
 
     // ---- 4. scratch directory next to the output (RAII: removed on any exit) --
     const QString outDir = QFileInfo(m_job.output).absolutePath();
@@ -146,7 +122,6 @@ void SmartCutter::execute() {
     for (int i = 0; i < count; ++i) {
         const FfmpegStep& st = pipeline.steps[static_cast<std::size_t>(i)];
         emit stageChanged(q(st.label), i + 1, count);
-        emit log(QStringLiteral(">>    ") + q(st.label));
 
         QStringList args;
         for (const std::string& a : st.args) args << q(a);

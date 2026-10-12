@@ -1,8 +1,11 @@
 #include "ui/MainWindow.h"
 
+#include <QAbstractSpinBox>
 #include <QAction>
 #include <QCloseEvent>
 #include <QDir>
+#include <QDragEnterEvent>
+#include <QDropEvent>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QGridLayout>
@@ -13,25 +16,29 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
-#include <QPlainTextEdit>
+#include <QMimeData>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QThread>
+#include <QTime>
+#include <QTimeEdit>
 #include <QTimer>
+#include <QUrl>
 #include <QVBoxLayout>
 #include <cmath>
 
 #include "core/AppInfo.h"
 #include "core/TimeUtils.h"
+#include "engine/DurationProbe.h"
 #include "engine/FfmpegLocator.h"
 #include "engine/SmartCutter.h"
 #include "ui/AboutDialog.h"
-#include "ui/PlanTableWidget.h"
 #include "ui/SettingsPanel.h"
 
 namespace vidcut {
 
 namespace {
+
 const QStringList kOutputExts = {QStringLiteral("mp4"), QStringLiteral("mkv"), QStringLiteral("mov")};
 
 QString formatEta(double seconds) {
@@ -41,6 +48,35 @@ QString formatEta(double seconds) {
         return QStringLiteral("%1:%2:%3").arg(h).arg(m, 2, 10, QLatin1Char('0')).arg(sec, 2, 10, QLatin1Char('0'));
     return QStringLiteral("%1:%2").arg(m, 2, 10, QLatin1Char('0')).arg(sec, 2, 10, QLatin1Char('0'));
 }
+
+int toSeconds(const QTime& t) { return t.hour() * 3600 + t.minute() * 60 + t.second(); }
+
+QTime fromSeconds(int s) {
+    s = qBound(0, s, 24 * 3600 - 1);  // the HH:MM:SS editor covers 00:00:00 - 23:59:59
+    return QTime(s / 3600, (s / 60) % 60, s % 60);
+}
+
+// First regular file in a drag & drop payload (folders and web links are ignored).
+QString droppedFilePath(const QMimeData* mime) {
+    if (!mime || !mime->hasUrls()) return QString();
+    const QList<QUrl> urls = mime->urls();
+    for (const QUrl& url : urls) {
+        if (!url.isLocalFile()) continue;
+        const QString path = url.toLocalFile();
+        if (QFileInfo(path).isFile()) return path;
+    }
+    return QString();
+}
+
+QTimeEdit* makeTimeEdit(QWidget* parent) {
+    auto* e = new QTimeEdit(QTime(0, 0, 0), parent);
+    e->setDisplayFormat(QStringLiteral("HH:mm:ss"));  // typing 2 digits jumps to the next block
+    e->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    e->setAlignment(Qt::AlignCenter);
+    e->setMinimumWidth(90);
+    return e;
+}
+
 }  // namespace
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
@@ -49,11 +85,22 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     buildUi();
     buildMenus();
 
+    m_probe = new DurationProbe(this);
+    connect(m_probe, &DurationProbe::succeeded, this, &MainWindow::onProbeSucceeded);
+    connect(m_probe, &DurationProbe::failed, this, &MainWindow::onProbeFailed);
+
     m_settingsPanel->setSettings(m_store.loadEncodeSettings());
     if (!m_store.windowGeometry().isEmpty()) restoreGeometry(m_store.windowGeometry());
-    else resize(680, 760);
+    else resize(620, 430);
 
-    setBusy(false);
+    // Drag & drop: accepted by the window; text fields must not swallow the drop.
+    setAcceptDrops(true);
+    const QList<QLineEdit*> edits = findChildren<QLineEdit*>();
+    for (QLineEdit* e : edits) e->setAcceptDrops(false);
+    const QList<QAbstractSpinBox*> spins = findChildren<QAbstractSpinBox*>();
+    for (QAbstractSpinBox* s : spins) s->setAcceptDrops(false);
+
+    updateControls();
     QTimer::singleShot(0, this, &MainWindow::checkFfmpegOnStartup);
 }
 
@@ -65,10 +112,9 @@ void MainWindow::buildUi() {
     auto* files = new QGroupBox(QStringLiteral("Files"), central);
     auto* fg = new QGridLayout(files);
     m_inputEdit = new QLineEdit(files);
-    m_inputEdit->setPlaceholderText(QStringLiteral("Select a video file..."));
+    m_inputEdit->setReadOnly(true);  // chosen with Browse or drag & drop
     m_inputBrowse = new QPushButton(QStringLiteral("Browse..."), files);
     m_outputEdit = new QLineEdit(files);
-    m_outputEdit->setPlaceholderText(QStringLiteral("Output file (.mp4, .mkv or .mov)"));
     m_outputBrowse = new QPushButton(QStringLiteral("Browse..."), files);
     fg->addWidget(new QLabel(QStringLiteral("Input:"), files), 0, 0);
     fg->addWidget(m_inputEdit, 0, 1);
@@ -84,20 +130,15 @@ void MainWindow::buildUi() {
 
     // --- time range -----------------------------------------------------------
     auto* range = new QGroupBox(QStringLiteral("Time Range"), central);
-    auto* rg = new QGridLayout(range);
-    m_startEdit = new QLineEdit(QStringLiteral("00:00:00"), range);
-    m_endEdit = new QLineEdit(range);
-    m_startEdit->setPlaceholderText(QStringLiteral("HH:MM:SS"));
-    m_endEdit->setPlaceholderText(QStringLiteral("HH:MM:SS"));
-    auto* rangeHint = new QLabel(QStringLiteral("Format: HH:MM:SS or HH:MM:SS.mmm  (e.g. 00:01:30 or 00:00:10.500)"), range);
-    rangeHint->setStyleSheet(QStringLiteral("color: #666666;"));
-    rg->addWidget(new QLabel(QStringLiteral("Start:"), range), 0, 0);
-    rg->addWidget(m_startEdit, 0, 1);
-    rg->addWidget(new QLabel(QStringLiteral("End:"), range), 0, 2);
-    rg->addWidget(m_endEdit, 0, 3);
-    rg->addWidget(rangeHint, 1, 0, 1, 4);
-    rg->setColumnStretch(1, 1);
-    rg->setColumnStretch(3, 1);
+    auto* rg = new QHBoxLayout(range);
+    m_startEdit = makeTimeEdit(range);
+    m_endEdit = makeTimeEdit(range);
+    rg->addWidget(new QLabel(QStringLiteral("Start:"), range));
+    rg->addWidget(m_startEdit);
+    rg->addSpacing(16);
+    rg->addWidget(new QLabel(QStringLiteral("End:"), range));
+    rg->addWidget(m_endEdit);
+    rg->addStretch(1);
     root->addWidget(range);
 
     // --- settings ---------------------------------------------------------------
@@ -123,20 +164,10 @@ void MainWindow::buildUi() {
     m_progress->setRange(0, 1000);
     m_progress->setValue(0);
     m_speedLabel = new QLabel(central);
-    m_speedLabel->setStyleSheet(QStringLiteral("color: #666666;"));
     root->addWidget(m_stageLabel);
     root->addWidget(m_progress);
     root->addWidget(m_speedLabel);
-
-    // --- plan + log ---------------------------------------------------------------
-    m_planTable = new PlanTableWidget(central);
-    root->addWidget(m_planTable);
-
-    m_log = new QPlainTextEdit(central);
-    m_log->setReadOnly(true);
-    m_log->setMaximumBlockCount(2000);
-    m_log->setPlaceholderText(QStringLiteral("Log"));
-    root->addWidget(m_log, 1);
+    root->addStretch(1);
 
     setCentralWidget(central);
 }
@@ -155,14 +186,16 @@ void MainWindow::buildMenus() {
     connect(about, &QAction::triggered, this, &MainWindow::showAbout);
 }
 
-void MainWindow::setBusy(bool busy) {
-    for (QWidget* w : {static_cast<QWidget*>(m_inputEdit), static_cast<QWidget*>(m_outputEdit),
-                       static_cast<QWidget*>(m_startEdit), static_cast<QWidget*>(m_endEdit),
-                       static_cast<QWidget*>(m_inputBrowse), static_cast<QWidget*>(m_outputBrowse),
-                       static_cast<QWidget*>(m_settingsPanel)})
-        w->setEnabled(!busy);
-    m_cutButton->setEnabled(!busy);
-    m_cancelButton->setEnabled(busy);
+void MainWindow::updateControls() {
+    const bool running = (m_thread != nullptr);
+    m_inputBrowse->setEnabled(!running);
+    m_outputEdit->setEnabled(!running);
+    m_outputBrowse->setEnabled(!running);
+    m_startEdit->setEnabled(!running);
+    m_endEdit->setEnabled(!running);
+    m_settingsPanel->setEnabled(!running);
+    m_cutButton->setEnabled(!running && !m_probing && m_inputDuration > 0.0);
+    m_cancelButton->setEnabled(running && !m_cancelRequested);
 }
 
 QString MainWindow::defaultOutputFor(const QString& input) const {
@@ -173,21 +206,87 @@ QString MainWindow::defaultOutputFor(const QString& input) const {
 }
 
 // ---------------------------------------------------------------------------------
-// file selection
+// loading an input file (Browse or drag & drop)
 // ---------------------------------------------------------------------------------
 
 void MainWindow::browseInput() {
     const QString path = QFileDialog::getOpenFileName(
         this, QStringLiteral("Select Input Video"), m_store.lastDir(QStringLiteral("input")),
         QStringLiteral("Video files (*.mp4 *.mkv *.mov *.avi *.webm *.ts *.m4v *.flv *.wmv *.mts *.m2ts);;All files (*)"));
+    if (!path.isEmpty()) loadInput(path);
+}
+
+void MainWindow::dragEnterEvent(QDragEnterEvent* event) {
+    if (!m_thread && !droppedFilePath(event->mimeData()).isEmpty()) event->acceptProposedAction();
+}
+
+void MainWindow::dropEvent(QDropEvent* event) {
+    if (m_thread) return;
+    const QString path = droppedFilePath(event->mimeData());
     if (path.isEmpty()) return;
-    m_inputEdit->setText(QDir::toNativeSeparators(path));
-    m_store.setLastDir(QStringLiteral("input"), QFileInfo(path).absolutePath());
+    event->acceptProposedAction();
+    loadInput(path);
+}
+
+void MainWindow::loadInput(const QString& path) {
+    const FfmpegTools tools = FfmpegLocator::locate(m_store.ffmpegDir());
+    if (!tools.isValid()) {
+        QMessageBox::warning(this, QStringLiteral("FFmpeg not found"),
+                             QStringLiteral("ffmpeg / ffprobe not found.\nUse File > Set FFmpeg Location... to choose them."));
+        return;
+    }
+
+    const QString abs = QFileInfo(path).absoluteFilePath();
+    m_loadedPath = abs;
+    m_inputDuration = 0.0;
+    m_inputEdit->setText(QDir::toNativeSeparators(abs));
+    m_store.setLastDir(QStringLiteral("input"), QFileInfo(abs).absolutePath());
     if (m_outputAutoFilled || m_outputEdit->text().trimmed().isEmpty()) {
-        m_outputEdit->setText(QDir::toNativeSeparators(defaultOutputFor(path)));
+        m_outputEdit->setText(QDir::toNativeSeparators(defaultOutputFor(abs)));
         m_outputAutoFilled = true;
     }
+    m_startEdit->setTime(QTime(0, 0, 0));
+    m_endEdit->setTime(QTime(0, 0, 0));
+    m_progress->setValue(0);
+    m_speedLabel->clear();
+    m_stageLabel->setText(QStringLiteral("Reading video info..."));
+
+    m_probing = true;
+    updateControls();
+    m_probe->start(tools.ffprobe, abs);
 }
+
+void MainWindow::clearInput() {
+    m_loadedPath.clear();
+    m_inputDuration = 0.0;
+    m_inputEdit->clear();
+    if (m_outputAutoFilled) m_outputEdit->clear();
+    m_startEdit->setTime(QTime(0, 0, 0));
+    m_endEdit->setTime(QTime(0, 0, 0));
+}
+
+void MainWindow::onProbeSucceeded(const QString& path, double durationSeconds) {
+    if (path != m_loadedPath) return;  // result of an older file
+    m_probing = false;
+    m_inputDuration = durationSeconds;
+    // Round up to whole seconds: the cutter clamps the end to the real end of the video.
+    m_endEdit->setTime(fromSeconds(static_cast<int>(std::ceil(durationSeconds - 0.001))));
+    m_stageLabel->setText(QStringLiteral("Ready"));
+    updateControls();
+}
+
+void MainWindow::onProbeFailed(const QString& path, const QString& message) {
+    if (path != m_loadedPath) return;
+    m_probing = false;
+    clearInput();
+    m_stageLabel->setText(QStringLiteral("Ready"));
+    updateControls();
+    QMessageBox::warning(this, QStringLiteral("VidCut"), message);
+}
+
+// ---------------------------------------------------------------------------------
+// output / ffmpeg location / about
+// ---------------------------------------------------------------------------------
 
 void MainWindow::browseOutput() {
     QString start = m_outputEdit->text().trimmed();
@@ -202,18 +301,8 @@ void MainWindow::browseOutput() {
     m_store.setLastDir(QStringLiteral("output"), QFileInfo(path).absolutePath());
 }
 
-// ---------------------------------------------------------------------------------
-// FFmpeg location
-// ---------------------------------------------------------------------------------
-
 void MainWindow::checkFfmpegOnStartup() {
-    const FfmpegTools t = FfmpegLocator::locate(m_store.ffmpegDir());
-    if (t.isValid()) {
-        appendLog(QStringLiteral("INFO  ffmpeg:  ") + QDir::toNativeSeparators(t.ffmpeg));
-        appendLog(QStringLiteral("INFO  ffprobe: ") + QDir::toNativeSeparators(t.ffprobe));
-        return;
-    }
-    appendLog(QStringLiteral("ERROR ffmpeg / ffprobe not found."));
+    if (FfmpegLocator::locate(m_store.ffmpegDir()).isValid()) return;
     QMessageBox::warning(
         this, QStringLiteral("FFmpeg not found"),
         QStringLiteral("VidCut needs ffmpeg and ffprobe, but could not find them.\n\n"
@@ -225,14 +314,12 @@ void MainWindow::chooseFfmpegLocation() {
     const QString dir = QFileDialog::getExistingDirectory(
         this, QStringLiteral("Select the folder containing ffmpeg and ffprobe"), m_store.ffmpegDir());
     if (dir.isEmpty()) return;
-    const FfmpegTools t = FfmpegLocator::findInDir(dir);
-    if (!t.isValid()) {
+    if (!FfmpegLocator::findInDir(dir).isValid()) {
         QMessageBox::warning(this, QStringLiteral("FFmpeg not found"),
                              QStringLiteral("That folder does not contain both ffmpeg and ffprobe."));
         return;
     }
     m_store.setFfmpegDir(dir);
-    appendLog(QStringLiteral("INFO  ffmpeg location set: ") + QDir::toNativeSeparators(dir));
 }
 
 void MainWindow::showAbout() {
@@ -245,7 +332,7 @@ void MainWindow::showAbout() {
 // ---------------------------------------------------------------------------------
 
 void MainWindow::startCut() {
-    if (m_thread) return;  // previous run still shutting down
+    if (m_thread || m_probing) return;
 
     auto warn = [this](const QString& msg) {
         QMessageBox::warning(this, QStringLiteral("VidCut"), msg);
@@ -257,28 +344,24 @@ void MainWindow::startCut() {
         return;
     }
 
-    const QString input = QFileInfo(m_inputEdit->text().trimmed()).absoluteFilePath();
-    if (m_inputEdit->text().trimmed().isEmpty() || !QFileInfo(input).isFile()) {
-        warn(QStringLiteral("Please select an existing input file."));
+    const QString input = m_loadedPath;
+    if (input.isEmpty() || m_inputDuration <= 0.0 || !QFileInfo(input).isFile()) {
+        warn(QStringLiteral("Please select an input video first."));
         return;
     }
 
-    const auto start = parseTime(m_startEdit->text().toStdString());
-    if (!start) {
-        warn(QStringLiteral("Invalid start time. Use HH:MM:SS (e.g. 00:01:30)."));
-        return;
-    }
-    const auto end = parseTime(m_endEdit->text().toStdString());
-    if (!end) {
-        warn(QStringLiteral("Invalid end time. Use HH:MM:SS (e.g. 00:05:45)."));
-        return;
-    }
-    if (*start >= *end) {
+    const int start = toSeconds(m_startEdit->time());
+    const int end = toSeconds(m_endEdit->time());
+    if (start >= end) {
         warn(QStringLiteral("Start time must be earlier than end time."));
         return;
     }
+    if (start >= m_inputDuration) {
+        warn(QStringLiteral("Start time is beyond the end of the video."));
+        return;
+    }
 
-    QString outText = m_outputEdit->text().trimmed();
+    const QString outText = m_outputEdit->text().trimmed();
     if (outText.isEmpty()) {
         warn(QStringLiteral("Please choose an output file."));
         return;
@@ -324,20 +407,16 @@ void MainWindow::startCut() {
     CutJob job;
     job.input = input;
     job.output = output;
-    job.start = *start;
-    job.end = *end;
+    job.start = start;
+    job.end = end;
     job.settings = enc;
     job.ffmpeg = tools.ffmpeg;
     job.ffprobe = tools.ffprobe;
 
-    m_planTable->clearPlan();
     m_progress->setValue(0);
     m_speedLabel->clear();
     m_stageLabel->setText(QStringLiteral("Starting..."));
-    appendLog(QStringLiteral("------------------------------------------------------------"));
-    appendLog(QStringLiteral("INFO  %1  ->  %2  (%3 - %4)")
-                  .arg(QDir::toNativeSeparators(input), QDir::toNativeSeparators(output),
-                       QString::fromStdString(formatTime(*start)), QString::fromStdString(formatTime(*end))));
+    m_cancelRequested = false;
 
     m_thread = new QThread(this);
     m_worker = new SmartCutter(job);  // no parent: it is moved to the thread
@@ -348,28 +427,26 @@ void MainWindow::startCut() {
     connect(m_thread, &QThread::finished, m_worker, &QObject::deleteLater);
     connect(m_thread, &QThread::finished, this, &MainWindow::onThreadFinished);
 
-    connect(m_worker, &SmartCutter::log, this, &MainWindow::appendLog);
-    connect(m_worker, &SmartCutter::planReady, m_planTable, &PlanTableWidget::setPlan);
     connect(m_worker, &SmartCutter::stageChanged, this, &MainWindow::onStage);
     connect(m_worker, &SmartCutter::progress, this, &MainWindow::onProgress);
     connect(m_worker, &SmartCutter::succeeded, this, &MainWindow::onSucceeded);
     connect(m_worker, &SmartCutter::failed, this, &MainWindow::onFailed);
     connect(m_worker, &SmartCutter::cancelled, this, &MainWindow::onCancelled);
 
-    setBusy(true);
+    updateControls();
     m_thread->start();
 }
 
 void MainWindow::cancelCut() {
     if (!m_worker) return;
+    m_cancelRequested = true;
     m_worker->requestCancel();
-    m_cancelButton->setEnabled(false);
     m_stageLabel->setText(QStringLiteral("Cancelling..."));
+    updateControls();
 }
 
-void MainWindow::appendLog(const QString& line) { m_log->appendPlainText(line); }
-
 void MainWindow::onStage(const QString& label, int index, int count) {
+    if (m_cancelRequested) return;
     m_stageLabel->setText(QStringLiteral("Step %1 of %2: %3").arg(index).arg(count).arg(label));
     m_progress->setValue(0);
     m_speedLabel->clear();
@@ -384,36 +461,30 @@ void MainWindow::onProgress(double fraction, double speed, double etaSeconds) {
 }
 
 void MainWindow::onSucceeded(const QString& summary) {
-    setBusy(false);
     m_progress->setValue(1000);
     m_stageLabel->setText(QStringLiteral("Done"));
     m_speedLabel->clear();
-    appendLog(QStringLiteral("DONE"));
-    appendLog(summary);
     QMessageBox::information(this, QStringLiteral("Done"), summary);
 }
 
 void MainWindow::onFailed(const QString& message) {
-    setBusy(false);
     m_stageLabel->setText(QStringLiteral("Failed"));
     m_speedLabel->clear();
-    appendLog(QStringLiteral("ERROR ") + message);
     QMessageBox::critical(this, QStringLiteral("Error"), message);
 }
 
 void MainWindow::onCancelled() {
-    setBusy(false);
     m_progress->setValue(0);
     m_stageLabel->setText(QStringLiteral("Cancelled"));
     m_speedLabel->clear();
-    appendLog(QStringLiteral("INFO  Cancelled by user."));
 }
 
 void MainWindow::onThreadFinished() {
     if (m_thread) m_thread->deleteLater();
     m_thread = nullptr;
     m_worker = nullptr;  // freed through deleteLater (connected to QThread::finished)
-    setBusy(false);
+    m_cancelRequested = false;
+    updateControls();
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {

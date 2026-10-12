@@ -1,7 +1,6 @@
 #pragma once
 #include <QObject>
 #include <QString>
-#include <QVariantList>
 
 #include "core/EncodeSettings.h"
 #include "engine/CutErrors.h"
@@ -33,8 +32,6 @@ public slots:
     void run();
 
 signals:
-    void log(const QString& line);
-    void planReady(const QVariantList& rows);  // each row: QStringList{segment, mode, range, duration}
     void stageChanged(const QString& label, int index, int count);
     void progress(double fraction, double speed, double etaSeconds);  // eta < 0 = unknown
     void succeeded(const QString& summary);

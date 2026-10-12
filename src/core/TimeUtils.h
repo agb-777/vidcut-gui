@@ -1,12 +1,8 @@
 #pragma once
 #include <cstdint>
-#include <optional>
 #include <string>
 
 namespace vidcut {
-
-// "HH:MM:SS" or "HH:MM:SS.mmm" -> seconds. nullopt if the format is invalid.
-std::optional<double> parseTime(const std::string& text);
 
 // seconds -> "HH:MM:SS.mmm"
 std::string formatTime(double seconds);

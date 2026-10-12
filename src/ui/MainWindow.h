@@ -1,20 +1,22 @@
 #pragma once
 #include <QMainWindow>
-#include <QVariantList>
+#include <QString>
 
 #include "engine/SettingsStore.h"
 
 class QCloseEvent;
+class QDragEnterEvent;
+class QDropEvent;
 class QLabel;
 class QLineEdit;
-class QPlainTextEdit;
 class QProgressBar;
 class QPushButton;
 class QThread;
+class QTimeEdit;
 
 namespace vidcut {
 
-class PlanTableWidget;
+class DurationProbe;
 class SettingsPanel;
 class SmartCutter;
 
@@ -25,6 +27,8 @@ public:
 
 protected:
     void closeEvent(QCloseEvent* event) override;
+    void dragEnterEvent(QDragEnterEvent* event) override;
+    void dropEvent(QDropEvent* event) override;
 
 private slots:
     void browseInput();
@@ -35,7 +39,9 @@ private slots:
     void showAbout();
     void checkFfmpegOnStartup();
 
-    void appendLog(const QString& line);
+    void onProbeSucceeded(const QString& path, double durationSeconds);
+    void onProbeFailed(const QString& path, const QString& message);
+
     void onStage(const QString& label, int index, int count);
     void onProgress(double fraction, double speed, double etaSeconds);
     void onSucceeded(const QString& summary);
@@ -46,15 +52,17 @@ private slots:
 private:
     void buildUi();
     void buildMenus();
-    void setBusy(bool busy);
+    void loadInput(const QString& path);  // fills the fields and reads the duration
+    void clearInput();
+    void updateControls();
     QString defaultOutputFor(const QString& input) const;
 
     SettingsStore m_store;
 
     QLineEdit* m_inputEdit = nullptr;
     QLineEdit* m_outputEdit = nullptr;
-    QLineEdit* m_startEdit = nullptr;
-    QLineEdit* m_endEdit = nullptr;
+    QTimeEdit* m_startEdit = nullptr;
+    QTimeEdit* m_endEdit = nullptr;
     QPushButton* m_inputBrowse = nullptr;
     QPushButton* m_outputBrowse = nullptr;
     SettingsPanel* m_settingsPanel = nullptr;
@@ -63,11 +71,15 @@ private:
     QLabel* m_stageLabel = nullptr;
     QProgressBar* m_progress = nullptr;
     QLabel* m_speedLabel = nullptr;
-    PlanTableWidget* m_planTable = nullptr;
-    QPlainTextEdit* m_log = nullptr;
 
+    DurationProbe* m_probe = nullptr;
     QThread* m_thread = nullptr;
     SmartCutter* m_worker = nullptr;
+
+    QString m_loadedPath;           // file whose duration we are reading / have read
+    double m_inputDuration = 0.0;   // seconds; 0 = nothing loaded yet
+    bool m_probing = false;
+    bool m_cancelRequested = false;
     bool m_outputAutoFilled = true;  // output field was generated from the input name
 };
 
