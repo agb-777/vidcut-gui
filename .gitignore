@@ -1,6 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
 build/
-build-*/
-.vs/
+dist/
+*.spec
+*.egg-info/
 .idea/
-*.user
-CMakeUserPresets.json
+.vscode/
