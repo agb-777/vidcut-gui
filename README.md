@@ -25,13 +25,16 @@ Optional: `pip install .` installs a `vidcut` launcher.
 3. `PATH`
 4. macOS: Homebrew / MacPorts locations
 
-## Tests
+## Notes
 
-```bash
-python -m unittest discover -s tests -v
-```
-`test_core` needs nothing; `test_engine` / `test_gui_smoke` need FFmpeg (skipped if missing)
-and run Qt headless (`QT_QPA_PLATFORM=offscreen`).
+- **MPEG-TS (`.ts`, `.mts`, `.m2ts`)**: ffmpeg cannot seek reliably in these files, so VidCut first
+  converts them to a temporary MKV (stream copy, no re-encoding) inside the output folder.
+  This takes extra time and needs free disk space roughly the size of the input; the temporary
+  file is removed afterwards.
+- A temporary hidden folder `.vidcut_XXXX` is created next to the output file while cutting and is
+  removed when finished or cancelled.
+- The time fields work in whole seconds (`HH:MM:SS`, up to 23:59:59). The **Duration** shown next to
+  End is an estimate: smart cut aligns to frames and keyframes, so the result can differ slightly.
 
 ## Build a standalone app
 
@@ -50,6 +53,5 @@ Then copy `ffmpeg` / `ffprobe` next to the produced executable (`dist/VidCut/`, 
 vidcut/core/     pure logic, no Qt (keyframes, cut plan, encoder args, ffmpeg pipeline)
 vidcut/engine/   subprocess runner, ffprobe wrappers, settings, SmartCutter worker thread
 vidcut/ui/       main window, settings panel, about dialog
-tests/
 ```
 Version is defined in one place: `vidcut/appinfo.py`.

@@ -6,6 +6,7 @@ import shutil
 import tempfile
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List, Optional
 
 from PySide6.QtCore import QObject, QThread, Signal
@@ -19,6 +20,28 @@ from . import media_probe
 from .errors import CancelToken, CutCancelled, CutError
 from .file_utils import replace_file
 from .process_runner import ProcessRunner
+
+
+# A TS "null packet" (PID 0x1FFF) is the standard padding; demuxers ignore it.
+_TS_NULL_PACKET = b"\x47\x1f\xff\x10" + b"\xff" * 184
+_TS_PACKET_SIZE = 188
+_MIN_TS_BYTES = 16 * 1024
+
+
+def _pad_tiny_ts(path: str) -> None:
+    """ffmpeg auto-detects the format of every segment when concatenating. A segment of
+    only a few small frames is just a handful of TS packets, which is too little for the
+    MPEG-TS probe: it gets misdetected as "mpeg" and the merge fails ("matches no streams").
+    Padding it with null packets makes detection reliable without changing its content."""
+    try:
+        size = os.path.getsize(path)
+        if size >= _MIN_TS_BYTES or size % _TS_PACKET_SIZE != 0:
+            return
+        missing = -(-(_MIN_TS_BYTES - size) // _TS_PACKET_SIZE)
+        with open(path, "ab") as f:
+            f.write(_TS_NULL_PACKET * missing)
+    except OSError:
+        pass  # best effort; a real I/O problem will surface in the next ffmpeg step
 
 
 @dataclass
@@ -102,23 +125,7 @@ class SmartCutter(QThread):
             raise CutError(f"Start ({format_time(job.start)}) is beyond the video duration "
                            f"({format_time(media.duration)}).")
 
-        # ---- 3. encoder + plan ----------------------------------------------------------
-        smart_enc = build_encoder_args(v, job.settings)
-        smart_ok = smart_enc is not None
-        # Codec not supported by smartcut -> full re-encode with libx264.
-        enc_args: List[str] = smart_enc if smart_enc is not None else \
-            fallback_encoder_args(v, job.settings)
-
-        plan: Optional[CutPlan] = None
-        if smart_ok:
-            pkts = media_probe.read_packets(runner, job.ffprobe, job.input, v.index,
-                                            media.start_time)
-            # Incomplete timestamps or no usable keyframe -> plan stays None and the
-            # whole range is re-encoded.
-            if pkts:
-                plan = make_plan(pkts, job.start, job.end)
-
-        # ---- 4. scratch directory next to the output (removed on any exit) ---------------
+        # ---- 3. scratch directory next to the output (removed on any exit) ---------------
         out_dir = os.path.dirname(os.path.abspath(job.output))
         try:
             tmp_dir = tempfile.mkdtemp(prefix=".vidcut_", dir=out_dir)
@@ -126,15 +133,63 @@ class SmartCutter(QThread):
             raise CutError(f"Cannot write to output directory: {e.strerror or e}") from e
 
         try:
-            self._run_pipeline(runner, job, media, enc_args, plan, tmp_dir)
+            source = job.input
+            if "mpegts" in media.format_name:
+                # ffmpeg cannot seek reliably in MPEG-TS (.ts/.mts/.m2ts): it lands inside a
+                # GOP, which gives empty or too short segments. Remux to MKV first (a pure
+                # stream copy) and cut that instead.
+                source = self._remux_to_mkv(runner, job, media, tmp_dir)
+                media = media_probe.probe(runner, job.ffprobe, source)
+                v = media.video
+
+            # ---- 4. encoder + plan --------------------------------------------------------
+            smart_enc = build_encoder_args(v, job.settings)
+            # Codec not supported by smartcut -> full re-encode with libx264.
+            enc_args: List[str] = smart_enc if smart_enc is not None else \
+                fallback_encoder_args(v, job.settings)
+
+            plan: Optional[CutPlan] = None
+            if smart_enc is not None:
+                pkts = media_probe.read_packets(runner, job.ffprobe, source, v.index,
+                                                media.start_time)
+                # Incomplete timestamps or no usable keyframe -> plan stays None and the
+                # whole range is re-encoded.
+                if pkts:
+                    plan = make_plan(pkts, job.start, job.end)
+
+            self._run_pipeline(runner, job, source, media, enc_args, plan, tmp_dir)
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    def _run_pipeline(self, runner: ProcessRunner, job: CutJob, media, enc_args: List[str],
-                      plan: Optional[CutPlan], tmp_dir: str) -> None:
+    def _progress_callback(self, total: float):
+        def on_progress(cur: float, speed: float) -> None:
+            frac = min(1.0, cur / total) if total > 0 else 0.0
+            eta = max(0.0, (total - cur) / speed) if speed > 0 and total > 0 else -1.0
+            self.progress.emit(frac, speed, eta)
+        return on_progress
+
+    def _remux_to_mkv(self, runner: ProcessRunner, job: CutJob, media, tmp_dir: str) -> str:
+        """Stream-copies video + audio of an MPEG-TS file into a temporary MKV."""
+        dest = f"{Path(tmp_dir).as_posix()}/source.mkv"
+        # index 0 / count 0 = "preparation", shown without "Step x of y"
+        self.stage_changed.emit("Preparing: converting MPEG-TS to MKV (no re-encoding)...", 0, 0)
+        runner.run_ffmpeg(job.ffmpeg,
+                          ["-i", job.input, "-map", "0:v", "-map", "0:a?", "-sn", "-dn",
+                           "-c", "copy", "-f", "matroska", dest],
+                          media.duration, self._progress_callback(media.duration))
+        try:
+            ok = os.path.getsize(dest) > 0
+        except OSError:
+            ok = False
+        if not ok:
+            raise CutError("Could not convert this MPEG-TS file to MKV (no output was produced).")
+        return dest
+
+    def _run_pipeline(self, runner: ProcessRunner, job: CutJob, source: str, media,
+                      enc_args: List[str], plan: Optional[CutPlan], tmp_dir: str) -> None:
         pp = PipelineParams(
-            input=job.input,
-            tmp_dir=tmp_dir.replace("\\", "/"),
+            input=source,
+            tmp_dir=Path(tmp_dir).as_posix(),  # forward slashes; keeps a literal \ in POSIX names
             output_ext=os.path.splitext(job.output)[1].lower(),
             media=media,
             encoder_args=enc_args,
@@ -157,20 +212,15 @@ class SmartCutter(QThread):
         for i, st in enumerate(pipeline.steps, start=1):
             self.stage_changed.emit(st.label, i, count)
 
-            total = st.total
-
-            def on_progress(cur: float, speed: float, total: float = total) -> None:
-                frac = min(1.0, cur / total) if total > 0 else 0.0
-                eta = max(0.0, (total - cur) / speed) if speed > 0 and total > 0 else -1.0
-                self.progress.emit(frac, speed, eta)
-
-            runner.run_ffmpeg(job.ffmpeg, st.args, total, on_progress)
+            runner.run_ffmpeg(job.ffmpeg, st.args, st.total, self._progress_callback(st.total))
 
             if st.check_output:
                 try:
                     size = os.path.getsize(st.check_output)
                 except OSError:
                     size = 0
+                if size > 0:
+                    _pad_tiny_ts(st.check_output)
                 if size == 0:
                     raise CutError(
                         f"ffmpeg produced an empty segment ({os.path.basename(st.check_output)}). "
@@ -178,11 +228,18 @@ class SmartCutter(QThread):
                         "Remux it first, e.g.: ffmpeg -i input.ts -c copy input.mkv")
 
         # ---- 6. move result into place ---------------------------------------------------
+        if not os.path.isfile(pipeline.final_tmp_path):
+            raise CutError("ffmpeg finished but did not produce an output file.")
         err = replace_file(pipeline.final_tmp_path, job.output)
         if err:
             raise CutError(err)
 
-        out_dur = media_probe.read_duration(runner, job.ffprobe, job.output)
+        # The result is already in place: failing to read its duration (or a cancel that
+        # arrives at the very last moment) must not turn a finished cut into an error.
+        try:
+            out_dur = media_probe.read_duration(runner, job.ffprobe, job.output)
+        except (CutError, CutCancelled):
+            out_dur = 0.0
         target = pipeline.e_eff - pipeline.s_eff
         size = os.path.getsize(job.output)
         elapsed = time.monotonic() - started

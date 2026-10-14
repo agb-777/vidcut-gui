@@ -92,7 +92,7 @@ def build_pipeline(p: PipelineParams) -> Pipeline:
             segments.append((ts, c.a_len))
 
         ts = tmp("b.ts")
-        a = ["-ss", sec(c.k1 + EPS), "-i", p.input, "-map", vmap, "-an"]
+        a = ["-ss", sec(c.b_seek), "-i", p.input, "-map", vmap, "-an"]
         if c.b_packets is not None:
             a += ["-frames:v", str(c.b_packets)]
         a += ["-c:v", "copy"]

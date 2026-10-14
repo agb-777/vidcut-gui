@@ -45,6 +45,11 @@ def from_seconds(s: int) -> QTime:
     return QTime(s // 3600, (s // 60) % 60, s % 60)
 
 
+def format_hms(seconds: float) -> str:
+    s = int(math.floor(max(0.0, seconds) + 0.5))
+    return f"{s // 3600:02d}:{(s // 60) % 60:02d}:{s % 60:02d}"
+
+
 def suffix_of(path: str) -> str:
     return os.path.splitext(path)[1].lstrip(".").lower()
 
@@ -153,7 +158,16 @@ class MainWindow(QMainWindow):
         rg.addSpacing(16)
         rg.addWidget(QLabel("End:", rng))
         rg.addWidget(self._end_edit)
+        rg.addSpacing(16)
+        rg.addWidget(QLabel("Duration:", rng))
+        self._duration_label = QLabel("--:--:--", rng)
+        self._duration_label.setMinimumWidth(70)
+        self._duration_label.setToolTip(
+            "Estimated length of the result (End is limited to the video length).")
+        rg.addWidget(self._duration_label)
         rg.addStretch(1)
+        self._start_edit.timeChanged.connect(self._update_duration)
+        self._end_edit.timeChanged.connect(self._update_duration)
         root.addWidget(rng)
 
         # --- settings ---
@@ -198,6 +212,15 @@ class MainWindow(QMainWindow):
         about = help_menu.addAction(f"&About {appinfo.NAME}")
         about.setMenuRole(QAction.MenuRole.AboutRole)
         about.triggered.connect(self._show_about)
+
+    @Slot()
+    def _update_duration(self, *_args) -> None:
+        start = to_seconds(self._start_edit.time())
+        end = float(to_seconds(self._end_edit.time()))
+        if self._input_duration > 0.0:
+            end = min(end, self._input_duration)  # the cutter clamps to the real end
+        length = end - start
+        self._duration_label.setText(format_hms(length) if length > 0 else "--:--:--")
 
     def _update_controls(self) -> None:
         running = self._cutter is not None
@@ -267,6 +290,7 @@ class MainWindow(QMainWindow):
         self._progress.setValue(0)
         self._speed_label.clear()
         self._stage_label.setText("Reading video info...")
+        self._update_duration()
 
         self._probing = True
         self._update_controls()
@@ -280,6 +304,7 @@ class MainWindow(QMainWindow):
             self._output_edit.clear()
         self._start_edit.setTime(QTime(0, 0, 0))
         self._end_edit.setTime(QTime(0, 0, 0))
+        self._update_duration()
 
     @Slot(str, float)
     def _on_probe_succeeded(self, path: str, duration: float) -> None:
@@ -290,6 +315,7 @@ class MainWindow(QMainWindow):
         # Round up to whole seconds: the cutter clamps the end to the real end of the video.
         self._end_edit.setTime(from_seconds(int(math.ceil(duration - 0.001))))
         self._stage_label.setText("Ready")
+        self._update_duration()
         self._update_controls()
 
     @Slot(str, str)
@@ -448,7 +474,10 @@ class MainWindow(QMainWindow):
     def _on_stage(self, label: str, index: int, count: int) -> None:
         if self._cancel_requested:
             return
-        self._stage_label.setText(f"Step {index} of {count}: {label}")
+        if count <= 0:  # preparation stage (e.g. converting MPEG-TS), not a numbered step
+            self._stage_label.setText(label)
+        else:
+            self._stage_label.setText(f"Step {index} of {count}: {label}")
         self._progress.setValue(0)
         self._speed_label.clear()
 

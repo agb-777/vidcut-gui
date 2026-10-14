@@ -25,3 +25,4 @@ class MediaInfo:
     has_audio: bool = False
     duration: float = 0.0
     start_time: float = 0.0
+    format_name: str = ""  # ffprobe format_name, e.g. "matroska,webm" or "mpegts"

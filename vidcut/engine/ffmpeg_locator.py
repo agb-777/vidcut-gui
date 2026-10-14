@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,9 +16,20 @@ class FfmpegTools:
         return bool(self.ffmpeg and self.ffprobe)
 
 
+def _exe_names(name: str) -> List[str]:
+    if sys.platform != "win32":
+        return [name]
+    exts = [e.lower() for e in os.environ.get("PATHEXT", ".EXE").split(";") if e]
+    return [name + e for e in exts] or [name + ".exe"]
+
+
 def _which_in(name: str, directory: str) -> str:
-    found = shutil.which(name, path=directory)  # honours PATHEXT (.exe) on Windows
-    return os.path.abspath(found) if found else ""
+    """Executable `name` inside exactly this folder ("" if missing). Never looks anywhere else."""
+    for candidate in _exe_names(name):
+        path = os.path.join(directory, candidate)
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return os.path.abspath(path)
+    return ""
 
 
 def find_in_dir(directory: str) -> FfmpegTools:
@@ -66,18 +76,19 @@ def locate(custom_dir: str = "") -> FfmpegTools:
         dirs += ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"]
 
     seen = set()
-    for d in dirs:
-        d = os.path.normpath(d)
-        if d in seen:
+    for directory in dirs:
+        normalized = os.path.normpath(directory)
+        if normalized in seen:
             continue
-        seen.add(d)
-        tools = find_in_dir(d)
+        seen.add(normalized)
+        tools = find_in_dir(normalized)
         if tools.is_valid():
             return tools
 
-    # Last resort: tools living in different folders on PATH.
-    ff = shutil.which("ffmpeg") or ""
-    fp = shutil.which("ffprobe") or ""
+    # Last resort: the two tools live in different folders on PATH.
+    path_dirs = [d for d in os.environ.get("PATH", "").split(os.pathsep) if d]
+    ff = next((f for f in (_which_in("ffmpeg", d) for d in path_dirs) if f), "")
+    fp = next((f for f in (_which_in("ffprobe", d) for d in path_dirs) if f), "")
     if ff and fp:
-        return FfmpegTools(os.path.abspath(ff), os.path.abspath(fp))
+        return FfmpegTools(ff, fp)
     return FfmpegTools()

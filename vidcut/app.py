@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 
-from PySide6.QtCore import QCoreApplication
+from PySide6.QtCore import QCoreApplication, Qt
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
 
@@ -13,7 +13,6 @@ def apply_light_theme(app: QApplication) -> None:
     """Plain white, "normal desktop application" look on every OS (ignores dark mode)."""
     hints = app.styleHints()
     if hasattr(hints, "setColorScheme"):  # Qt >= 6.8
-        from PySide6.QtCore import Qt
         hints.setColorScheme(Qt.ColorScheme.Light)
     app.setStyle("Fusion")
 

@@ -24,7 +24,7 @@ class SettingsStore:
             audio_bitrate=str(self._s.value("encode/audioBitrate", d.audio_bitrate)),
         )
         try:
-            s.crf = int(self._s.value("encode/crf", d.crf))
+            s.crf = int(str(self._s.value("encode/crf", d.crf)))
         except (TypeError, ValueError):
             return d  # corrupted / edited by hand
         if validate_settings(s):

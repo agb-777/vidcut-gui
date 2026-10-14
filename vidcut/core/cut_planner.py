@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+from bisect import bisect_right
 from dataclasses import dataclass
 from typing import List, Optional
 
 from .keyframe_analyzer import Packet, closed_keyframe_indices
 
 EPS = 0.0005
+
+# For streams with B-frames, ffmpeg subtracts 3/23 s from -ss on demuxers whose seeking is
+# DTS based (Matroska, MPEG-TS, AVI, ...). A seek target right after a keyframe therefore
+# lands one GOP too early. A target inside [k + DTS_SEEK_BIAS, next keyframe) lands on k
+# for every demuxer (those without the bias seek to "the keyframe at or before" it).
+DTS_SEEK_BIAS = 3.0 / 23.0
+SEEK_TOLERANCE = 0.01  # timestamp rounding (Matroska stores milliseconds)
+MAX_SEEK_INTO_GOP = 1.0  # do not aim deeper into a long GOP than this
 
 
 @dataclass
@@ -25,6 +34,27 @@ class CutPlan:
     b_len: float = 0.0
     c_len: float = 0.0
     b_packets: Optional[int] = None  # number of video packets in B (None = until EOF)
+    b_seek: float = 0.0  # where ffmpeg should seek to start copying B (lands on k1)
+
+
+def _has_reordering(pkts: List[Packet]) -> bool:
+    """True if the stream has B-frames (a packet's PTS is earlier than one before it)."""
+    latest = float("-inf")
+    for p in pkts:
+        if p.pts < latest:
+            return True
+        latest = p.pts
+    return False
+
+
+def copy_seek_time(keyframe: float, next_keyframe: float, has_reordering: bool) -> Optional[float]:
+    """-ss value that makes a stream copy start exactly at `keyframe`, or None if the GOP is
+    too short for a reliable target (only possible with B-frames)."""
+    low = keyframe + DTS_SEEK_BIAS + SEEK_TOLERANCE
+    high = min(next_keyframe - SEEK_TOLERANCE, low + MAX_SEEK_INTO_GOP)
+    if low <= high:
+        return (low + high) / 2.0
+    return None if has_reordering else keyframe + EPS
 
 
 def make_plan(pkts: List[Packet], start: float, end: float) -> Optional[CutPlan]:
@@ -43,7 +73,7 @@ def make_plan(pkts: List[Packet], start: float, end: float) -> Optional[CutPlan]
 
     e_found = next((p for p in pts if p >= end - EPS), None)
     to_eof = e_found is None
-    e_eff = pts[-1] + frame_dur if to_eof else e_found
+    e_eff = pts[-1] + frame_dur if e_found is None else e_found
     if e_eff - s_eff < frame_dur * 0.5:
         return None
 
@@ -51,7 +81,21 @@ def make_plan(pkts: List[Packet], start: float, end: float) -> Optional[CutPlan]
     if not closed:
         return None
 
-    i1 = next((i for i in closed if pkts[i].pts >= s_eff - EPS), None)
+    # First closed keyframe at/after the start for which a reliable copy-seek time exists.
+    all_keyframes = sorted(p.pts for p in pkts if p.keyframe)
+    reordering = _has_reordering(pkts)
+    i1: Optional[int] = None
+    b_seek = 0.0
+    for i in closed:
+        k = pkts[i].pts
+        if k < s_eff - EPS:
+            continue
+        j = bisect_right(all_keyframes, k + EPS)
+        next_kf = all_keyframes[j] if j < len(all_keyframes) else pts[-1] + frame_dur
+        seek = copy_seek_time(k, next_kf, reordering)
+        if seek is not None:
+            i1, b_seek = i, seek
+            break
     if i1 is None:
         return None
     k1 = pkts[i1].pts
@@ -82,4 +126,5 @@ def make_plan(pkts: List[Packet], start: float, end: float) -> Optional[CutPlan]
         b_len=k2 - k1,
         c_len=max(0.0, c_len),
         b_packets=b_packets,
+        b_seek=b_seek,
     )
