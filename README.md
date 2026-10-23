@@ -1,70 +1,60 @@
-# VidCut (Python / PySide6)
+# VidCut
 
-Fast, lossless-where-possible video cutter. Python 3 + PySide6 port of the C++/Qt VidCut.
+A video cutter for Windows, macOS and Linux, built with Python, PySide6 and FFmpeg.
 
-Keyframe-aligned parts are **stream-copied** without re-encoding; only the cut edges are
-re-encoded with settings matched to the source (codec, profile, level, pixel format, colour info),
-then everything is merged. Codecs other than H.264/HEVC fall back to a full libx264 re-encode.
+It cuts without re-encoding wherever it can. The part between two keyframes is copied as is,
+and only the start and end edges are re-encoded, using settings matched to the source file.
+The pieces are then merged into one file.
+
+## Features
+
+- Smart cut for H.264 and HEVC. Other codecs are fully re-encoded with libx264.
+- Output as `.mp4`, `.mkv` or `.mov`.
+- Adjustable preset, CRF and audio bitrate (audio is always re-encoded to AAC).
+- Keeps rotation, pixel format and colour info of the source.
+- Drag and drop a file into the window.
+- Progress bar with speed and ETA, cancel at any time.
+- Dark theme.
+
+## Requirements
+
+- Python 3.9 or newer
+- FFmpeg with `ffmpeg` and `ffprobe`. It needs the `-fps_mode` option (FFmpeg 5.1+), and rotated
+  videos also need `-display_rotation` (a newer build). VidCut tells you if either is missing.
 
 ## Run
-
-Requires Python 3.9+ and FFmpeg (`ffmpeg` + `ffprobe`).
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-python run_vidcut.py             # or: python -m vidcut
+python run_vidcut.py
 ```
 
-Optional: `pip install .` installs a `vidcut` launcher.
+## Usage
 
-The UI uses a **dark theme** on every OS (Fusion style + explicit palette, `vidcut/ui/theme.py`);
-all colours are defined in that one file.
+1. Choose or drag in an input video.
+2. Set Start and End (`HH:MM:SS`). The output file name is filled in for you, change it if needed.
+3. Adjust the encoding settings if you want, then click **Cut**.
 
-### FFmpeg lookup order
-1. Folder chosen in **File > Set FFmpeg Location...**
-2. Next to the app (also `./ffmpeg`, `./bin`, macOS `Resources`)
+## FFmpeg lookup
+
+VidCut looks for `ffmpeg` and `ffprobe` in this order:
+
+1. The folder set in **File > Set FFmpeg Location...**
+2. Next to the app (also `./ffmpeg` and `./bin`, and `Resources` on macOS)
 3. `PATH`
-4. macOS: Homebrew / MacPorts locations
+4. Homebrew and MacPorts locations on macOS
 
 ## Notes
 
-- **MPEG-TS (`.ts`, `.mts`, `.m2ts`)**: ffmpeg cannot seek reliably in these files, so VidCut first
-  converts them to a temporary MKV (stream copy, no re-encoding) inside the output folder.
-  This takes extra time and needs free disk space roughly the size of the input; the temporary
-  file is removed afterwards.
-- A temporary hidden folder `.vidcut_XXXX` is created next to the output file while cutting and is
-  removed when finished or cancelled.
-- The time fields work in whole seconds (`HH:MM:SS`, up to 23:59:59). The **Duration** shown next to
-  End is an estimate: smart cut aligns to frames and keyframes, so the result can differ slightly.
+- **Time fields** use whole seconds (`HH:MM:SS`, up to 23:59:59). The duration shown next to
+  End is an estimate, the real result can differ slightly because cuts snap to frames and keyframes.
+- **MPEG-TS** (`.ts`, `.mts`, `.m2ts`) cannot be seeked reliably, so VidCut first remuxes the file
+  to a temporary MKV (no re-encoding). This needs free disk space about the size of the input.
+- While cutting, a hidden `.vidcut_XXXX` folder is created next to the output file. It is removed
+  when the cut finishes or is cancelled.
 
-## Tests
+## Author
 
-```bash
-pip install -e ".[dev]"      # pytest
-python -m pytest             # needs ffmpeg/ffprobe on PATH; runs headless (offscreen Qt)
-```
-Covers the pure logic, the dark theme (WCAG contrast + rendered pixels), the window behaviour and
-real end-to-end cuts (mp4/mkv/mov/ts, H.264/HEVC/fallback, rotation, cancel, errors).
-
-## Build a standalone app
-
-PyInstaller cannot cross-compile: build on each target OS (or use a CI matrix).
-
-```bash
-pip install pyinstaller
-pyinstaller --noconfirm --windowed --name VidCut run_vidcut.py
-```
-Then copy `ffmpeg` / `ffprobe` next to the produced executable (`dist/VidCut/`, on macOS inside
-`VidCut.app/Contents/MacOS/` or `Contents/Resources/`) so users do not need to install FFmpeg.
-
-## Layout
-
-```
-vidcut/core/     pure logic, no Qt (keyframes, cut plan, encoder args, ffmpeg pipeline)
-vidcut/engine/   subprocess runner, ffprobe wrappers, settings, SmartCutter worker thread
-vidcut/ui/       main window, settings panel, about dialog, dark theme
-tests/           pytest suite
-```
-Version is defined in one place: `vidcut/appinfo.py`.
+[agb-777](https://github.com/agb-777) - https://github.com/agb-777/vidcut-gui
