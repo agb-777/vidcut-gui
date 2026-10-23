@@ -7,7 +7,14 @@ name = "vidcut"
 dynamic = ["version"]
 description = "Fast, keyframe-aware video cutter (PySide6 + FFmpeg)"
 requires-python = ">=3.9"
+authors = [{ name = "agb-777" }]
 dependencies = ["PySide6>=6.5"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.urls]
+Homepage = "https://github.com/agb-777/vidcut-gui"
 
 [project.gui-scripts]
 vidcut = "vidcut.app:main"
@@ -17,3 +24,6 @@ include = ["vidcut*"]
 
 [tool.setuptools.dynamic]
 version = { attr = "vidcut.appinfo.VERSION" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

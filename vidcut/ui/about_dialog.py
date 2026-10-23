@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import html
 import platform
 from typing import Optional
 
 import PySide6
-from PySide6.QtCore import qVersion
+from PySide6.QtCore import Qt, qVersion
 from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLabel, QVBoxLayout, QWidget
 
 from .. import appinfo
@@ -26,6 +27,15 @@ class AboutDialog(QDialog):
             "only the cut edges are re-encoded.", self)
         desc.setWordWrap(True)
 
+        author = QLabel(f"Author: {html.escape(appinfo.AUTHOR)}", self)
+        homepage = QLabel(
+            f'Homepage: <a href="{html.escape(appinfo.HOMEPAGE, quote=True)}">'
+            f"{html.escape(appinfo.HOMEPAGE)}</a>", self)
+        homepage.setTextFormat(Qt.TextFormat.RichText)
+        homepage.setOpenExternalLinks(True)  # opens in the default browser
+        homepage.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextBrowserInteraction)  # clickable + selectable
+
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok, self)
         buttons.accepted.connect(self.accept)
 
@@ -35,6 +45,9 @@ class AboutDialog(QDialog):
         layout.addWidget(runtime)
         layout.addSpacing(8)
         layout.addWidget(desc)
+        layout.addSpacing(8)
+        layout.addWidget(author)
+        layout.addWidget(homepage)
         layout.addSpacing(8)
         layout.addWidget(buttons)
         self.setMinimumWidth(380)

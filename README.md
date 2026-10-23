@@ -19,6 +19,9 @@ python run_vidcut.py             # or: python -m vidcut
 
 Optional: `pip install .` installs a `vidcut` launcher.
 
+The UI uses a **dark theme** on every OS (Fusion style + explicit palette, `vidcut/ui/theme.py`);
+all colours are defined in that one file.
+
 ### FFmpeg lookup order
 1. Folder chosen in **File > Set FFmpeg Location...**
 2. Next to the app (also `./ffmpeg`, `./bin`, macOS `Resources`)
@@ -36,6 +39,15 @@ Optional: `pip install .` installs a `vidcut` launcher.
 - The time fields work in whole seconds (`HH:MM:SS`, up to 23:59:59). The **Duration** shown next to
   End is an estimate: smart cut aligns to frames and keyframes, so the result can differ slightly.
 
+## Tests
+
+```bash
+pip install -e ".[dev]"      # pytest
+python -m pytest             # needs ffmpeg/ffprobe on PATH; runs headless (offscreen Qt)
+```
+Covers the pure logic, the dark theme (WCAG contrast + rendered pixels), the window behaviour and
+real end-to-end cuts (mp4/mkv/mov/ts, H.264/HEVC/fallback, rotation, cancel, errors).
+
 ## Build a standalone app
 
 PyInstaller cannot cross-compile: build on each target OS (or use a CI matrix).
@@ -52,6 +64,7 @@ Then copy `ffmpeg` / `ffprobe` next to the produced executable (`dist/VidCut/`, 
 ```
 vidcut/core/     pure logic, no Qt (keyframes, cut plan, encoder args, ffmpeg pipeline)
 vidcut/engine/   subprocess runner, ffprobe wrappers, settings, SmartCutter worker thread
-vidcut/ui/       main window, settings panel, about dialog
+vidcut/ui/       main window, settings panel, about dialog, dark theme
+tests/           pytest suite
 ```
 Version is defined in one place: `vidcut/appinfo.py`.
